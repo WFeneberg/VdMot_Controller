@@ -31,13 +31,13 @@
 #include <Arduino.h>
 #include "hardware.h"
 #include <Wire.h>
-#include <OneWire.h>
+#include "..\lib\OneWire\OneWire.cpp"
 #include <DallasTemperature.h>
 #include <ArduinoJson.h>            // library https://github.com/bblanchon/ArduinoJson
 #include "temperature.h"
 
 
-tempsensor  tempsensors[MAXSENSORCOUNT];
+tempsensor  tempsensors[MAXONEWIRECNT];
 uint8_t     numberOfDevices;
 
 //OneWire     oneWire;
@@ -78,7 +78,7 @@ void temperature_setup() {
     #ifdef tempDebug
       COMM_DBG.println("starting 1-wire setup"); 
     #endif
-    for (uint8_t i=0; i<MAXSENSORCOUNT; i++)
+    for (uint8_t i=0; i<MAXONEWIRECNT; i++)
     {
       memset (tempsensors[i].address,0x0,8);
     }
@@ -107,7 +107,7 @@ void temperature_setup() {
     }
 
     // init sensor array
-    for (unsigned int i = 0; i<MAXSENSORCOUNT; i++) {
+    for (unsigned int i = 0; i<MAXONEWIRECNT; i++) {
       tempsensors[i].temperature = -500;
     }
 

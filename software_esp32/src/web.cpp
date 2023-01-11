@@ -49,6 +49,7 @@
 #include "helper.h"
 #include "stm32.h"
 #include "stmApp.h"
+#include "stm32ota.h"
 #include "mqtt.h"
 
 CWeb Web;
@@ -76,8 +77,8 @@ String CWeb::getNetConfig (VDM_NETWORK_CONFIG netConfig)
                   "\"userName\":\""+String(netConfig.userName)+"\","+
                   "\"ssid\":\""+String(netConfig.ssid)+"\","+
                   "\"timeServer\":\""+String(netConfig.timeServer)+"\","+
-                  "\"timeOffset\":"+String(netConfig.timeOffset)+","+
-                  "\"timeDST\":"+String(netConfig.daylightOffset)+","+
+                  "\"tz\":\""+String(VdmConfig.configFlash.timeZoneConfig.tz)+"\","+
+                  "\"tzCode\":\""+String(VdmConfig.configFlash.timeZoneConfig.tzCode)+"\","+
                   "\"syslogLevel\":"+String(netConfig.syslogLevel)+","+
                   "\"syslogIp\":\""+ip2String(netConfig.syslogIp)+"\","+
                   "\"syslogPort\":"+String(netConfig.syslogPort)+  
@@ -104,6 +105,8 @@ String CWeb::getProtConfig (VDM_PROTOCOL_CONFIG protConfig)
                     "\"port\":\""+String(protConfig.brokerPort)+"\","+
                     "\"interval\":"+String(protConfig.brokerInterval)+","+
                     "\"pubTarget\":"+String(protConfig.publishTarget)+","+
+                    "\"pubAllTemps\":"+String(protConfig.publishAllTemps)+","+
+                    "\"pubPathAsRoot\":"+String(protConfig.publishPathAsRoot)+","+
                     "\"user\":\""+String(protConfig.userName)+"\"}";  
   return result;  
 }
@@ -114,7 +117,8 @@ String CWeb::getValvesConfig (VDM_VALVES_CONFIG valvesConfig,MOTOR_CHARS motorCo
                    "\"hourOfCalib\":"+String(valvesConfig.hourOfCalib)+ "," +
                     "\"cycles\":"+String(StmApp.learnAfterMovements)+ "}," +
                    "\"motor\":{\"lowC\":"+String(motorConfig.maxLowCurrent) + "," +
-                   "\"highC\":"+String(motorConfig.maxHighCurrent)+ "}," +
+                   "\"highC\":"+String(motorConfig.maxHighCurrent)+ "," +
+                   "\"startOnPower\":"+String(motorConfig.startOnPower)+ "}," +
                    "\"valves\":[" ;
 
   for (uint8_t x=0;x<ACTUATOR_COUNT;x++) {
@@ -196,19 +200,25 @@ String CWeb::getSysInfo()
   time_t t;
   struct tm *tmp ;
   char buf[50];
-  #ifdef FIRMWARE_BUILD
-    t = FIRMWARE_BUILD;
-    tmp = gmtime (&t);
-    strftime (buf, sizeof(buf), " Build %d.%m.%Y %H:%M", tmp);
-    wt32Build = String(buf);
-  #endif
+
+#ifndef FIRMWARE_BUILD 
+  t = FIRMWARE_BUILD;
+  tmp = gmtime (&t);
+  strftime (buf, sizeof(buf), " Build %d.%m.%Y %H:%M", tmp);
+  wt32Build = String(buf);
+#else
+  wt32Build = " release";
+#endif  
 
   t = VdmSystem.stmBuild;
   String stmBuild="";
-  if (t>0) {
+  if (t>1) {
     tmp = gmtime (&t);
     strftime (buf, sizeof(buf), " Build %d.%m.%Y %H:%M", tmp);
     stmBuild = String (buf);
+  }
+  else if(t==1) {
+    stmBuild = " release";
   }
 
   String result = "{\"wt32version\":\""+String(FIRMWARE_VERSION)+wt32Build+"\"," +
@@ -231,16 +241,20 @@ String CWeb::getSysDynInfo()
   } else {
     strftime (buf, sizeof(buf), "%A, %B %d.%Y %H:%M:%S", &timeinfo);
     time = String(buf);
-    uint64_t seconds=difftime(mktime(&timeinfo),mktime(&VdmNet.startTimeinfo));
-    int hr=(int)(seconds/3600);
-    int min=((int)(seconds/60))%60;
-    int sec=(int)(seconds%60);
-    String sMin = String(min);
-    if (min<10) sMin = "0"+sMin;
-    String sSec = String(sec);
-    if (sec<10) sSec = "0"+sSec;
-    upTime=String(hr)+":"+sMin+":"+sSec;
+    
+    int64_t upTimeUS = esp_timer_get_time(); // in microseconds
+    int64_t seconds = upTimeUS/1000000;
+    uint32_t days = (uint32_t)seconds/86400;
+    uint32_t hr=(uint32_t)seconds % 86400 /  3600;
+    uint32_t min=(uint32_t)seconds %  3600 / 60;
+    uint32_t sec=(uint32_t)seconds % 60;
+    snprintf (buf,sizeof(buf),"%dd %d:%02d:%02d", days, hr, min, sec);
+    upTime = String(buf);
   }
+
+  
+
+
   String result = "{\"locTime\":\""+time+"\"," +
                   "\"upTime\":\""+upTime+"\"," +
                   "\"heap\":\""+ConvBinUnits(ESP.getFreeHeap(),1)+ "\"," +
@@ -309,25 +323,31 @@ String CWeb::getFSDir()
 {
   String result;
   String item;
-  VdmSystem.getFSDirectory();
-  if (VdmSystem.numfiles>0) {
-    result = "[";
-    for (uint8_t x=0; x<VdmSystem.numfiles; x++) {
-      item = "{\"fName\":\"" + VdmSystem.Filenames[x].filename+"\","+
-              "\"ftype\":\"" + VdmSystem.Filenames[x].ftype+"\","+
-              "\"fsize\":\"" + VdmSystem.Filenames[x].fsize+"\""+
-              "}";
-      result+=item;
-      if (x<VdmSystem.numfiles-1) result += ",";
-    }  
-    result += "]";
-  } else result ="[]";
+  //VdmSystem.getFSDirectory();
+  
+  if (!VdmSystem.getFSInProgress) {
+    if (VdmSystem.numfiles>0) {
+      result = "[";
+      for (uint8_t x=0; x<VdmSystem.numfiles; x++) {
+        item = "{\"fName\":\"" + VdmSystem.Filenames[x].filename+"\","+
+                "\"ftype\":\"" + VdmSystem.Filenames[x].ftype+"\","+
+                "\"fsize\":\"" + VdmSystem.Filenames[x].fsize+"\""+
+                "}";
+        result+=item;
+        if (x<VdmSystem.numfiles-1) result += ",";
+      }  
+      result += "]";
+    } else result ="[]";
+  }
   return result;
 }
 
 String CWeb::getStmUpdStatus()
 {
-  String result = "{\"percent\":"+String(Stm32.stmUpdPercent)+",\"status\":"+String(Stm32.stmUpdateStatus)+"}";
+  String result = "{\"percent\":"+String(Stm32.stmUpdPercent)+","+
+                    "\"status\":"+String(Stm32.stmUpdateStatus)+","+
+                    "\"chipId\":\"0x"+String(StmOta.chipId,HEX)+"\","+
+                    "\"chipName\":\""+String(StmOta.chipName)+"\""+"}";
   return result;
 }
 

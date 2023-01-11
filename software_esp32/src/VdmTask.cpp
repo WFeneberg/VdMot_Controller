@@ -45,6 +45,7 @@
 #include "stm32.h"
 #include "ServerServices.h"
 #include "VdmConfig.h"
+#include "VdmSystem.h"
 #include <BasicInterruptAbstraction.h>
 #include "PIControl.h"
 
@@ -60,6 +61,8 @@ CVdmTask::CVdmTask()
   taskIdServices=TASKMGR_INVALIDID;
   taskIdSetFactoryCfgTimeOut=TASKMGR_INVALIDID;
   taskIdSetFactoryCfgInProgress=TASKMGR_INVALIDID;
+  taskIdRunOnceClearFS=TASKMGR_INVALIDID;
+  taskIdRunOnceGetFS=TASKMGR_INVALIDID;
   setFactoryCfgState=idle;
 }
 
@@ -118,16 +121,20 @@ void CVdmTask::startStm32Ota(uint8_t command,String thisFileName)
 
 void CVdmTask::startServices()
 {
+    UART_DBG.println("Start services");
     taskIdRunOnce = taskManager.scheduleOnce(1000, [] {
                 Services.runOnce();
     });
     taskIdRunOnceDelayed = taskManager.scheduleOnce(10000, [] {
                 Services.runOnceDelayed();
     });
-    taskIdServices = taskManager.scheduleFixedRate(60*1000, [] {
+    taskIdServices = taskManager.scheduleFixedRate(60, [] {
         Services.servicesLoop();
-    });
+    },TIME_SECONDS);
+}
 
+void CVdmTask::startPIServices()
+{
     for (uint8_t picIdx=0; picIdx<ACTUATOR_COUNT; picIdx++) { 
         if (VdmConfig.configFlash.valvesControlConfig.valveControlConfig[picIdx].active) {
             if (VdmConfig.configFlash.valvesControlConfig.valveControlConfig[picIdx].link==0) { 
@@ -139,12 +146,31 @@ void CVdmTask::startServices()
                 PiControl[picIdx].scheme=VdmConfig.configFlash.valvesControlConfig.valveControlConfig[picIdx].scheme;
                 PiControl[picIdx].startActiveZone=VdmConfig.configFlash.valvesControlConfig.valveControlConfig[picIdx].startActiveZone;
                 PiControl[picIdx].endActiveZone=VdmConfig.configFlash.valvesControlConfig.valveControlConfig[picIdx].endActiveZone;
-
-                taskIdPiControl[picIdx] = taskManager.scheduleFixedRate(VdmConfig.configFlash.valvesControlConfig.valveControlConfig[picIdx].ts, &PiControl[picIdx], TIME_SECONDS);
+                if (StmApp.motorChars.startOnPower>100) StmApp.motorChars.startOnPower=50;
+                PiControl[picIdx].startValvePos=StmApp.motorChars.startOnPower;
+                if (VdmConfig.configFlash.valvesControlConfig.valveControlConfig[picIdx].ts>0) {
+                    taskIdPiControl[picIdx] = taskManager.scheduleFixedRate(VdmConfig.configFlash.valvesControlConfig.valveControlConfig[picIdx].ts, &PiControl[picIdx], TIME_SECONDS);
+                }
             }
         }
     }
 }
+
+
+void CVdmTask::startClearFS()
+{
+    taskIdRunOnceClearFS = taskManager.scheduleOnce(100, [] {
+                VdmSystem.clearFS();
+    });
+}
+
+void CVdmTask::startGetFS()
+{
+    taskIdRunOnceGetFS = taskManager.scheduleOnce(100, [] {
+                VdmSystem.getFSDirectory();
+    });
+}
+
 
 void CVdmTask::deleteTask (taskid_t taskId)
 {
